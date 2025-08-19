@@ -5,6 +5,7 @@ using UnityEngine;
 using System.Threading.Tasks;
 using System.Runtime.CompilerServices;
 using System.Linq;
+
 using com.ImmersizeFramework.Core;
 
 namespace com.ImmersizeFramework.Media {

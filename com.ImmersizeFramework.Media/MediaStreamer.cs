@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Runtime.CompilerServices;
 using System.Linq;
 using System.IO;
+
 using com.ImmersizeFramework.Core;
 
 namespace com.ImmersizeFramework.Media {
