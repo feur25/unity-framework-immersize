@@ -172,6 +172,9 @@ namespace com.ImmersizeFramework.Core {
             RegisterService<Performance.PerformanceMonitor>();
             RegisterService<Input.InputManager>();
             RegisterService<Camera.CameraService>();
+            RegisterService<Media.MediaManager>();
+            RegisterService<Media.MediaStreamer>();
+            RegisterService<Media.MediaOptimizer>();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -269,6 +272,9 @@ namespace com.ImmersizeFramework.Core {
             Performance.PerformanceMonitor => 2,
             Input.InputManager => 3,
             Camera.CameraService => 4,
+            Media.MediaManager => 5,
+            Media.MediaStreamer => 6,
+            Media.MediaOptimizer => 7,
             _ => 10
         };
 
