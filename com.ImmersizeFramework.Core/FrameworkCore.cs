@@ -171,10 +171,12 @@ namespace com.ImmersizeFramework.Core {
             RegisterService<Tasks.TaskManager>();
             RegisterService<Performance.PerformanceMonitor>();
             RegisterService<Input.InputManager>();
+            RegisterService<Input.InputBindingSystem>();
             RegisterService<Camera.CameraService>();
             RegisterService<Media.MediaManager>();
             RegisterService<Media.MediaStreamer>();
             RegisterService<Media.MediaOptimizer>();
+            RegisterService<Game.ModuleManager>();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -271,10 +273,12 @@ namespace com.ImmersizeFramework.Core {
             Tasks.TaskManager => 1,
             Performance.PerformanceMonitor => 2,
             Input.InputManager => 3,
-            Camera.CameraService => 4,
-            Media.MediaManager => 5,
-            Media.MediaStreamer => 6,
-            Media.MediaOptimizer => 7,
+            Input.InputBindingSystem => 4,
+            Camera.CameraService => 5,
+            Media.MediaManager => 6,
+            Media.MediaStreamer => 7,
+            Media.MediaOptimizer => 8,
+            Game.ModuleManager => 9,
             _ => 10
         };
 
