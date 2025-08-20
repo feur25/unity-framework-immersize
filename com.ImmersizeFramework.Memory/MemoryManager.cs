@@ -40,8 +40,7 @@ namespace com.ImmersizeFramework.Memory {
             public bool TryGet(out T item) {
                 LastAccess = DateTime.UtcNow;
                 
-                if (Objects.TryDequeue(out item))
-                {
+                if (Objects.TryDequeue(out item)) {
                     CurrentActive++;
                     return true;
                 }

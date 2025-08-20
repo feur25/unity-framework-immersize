@@ -91,10 +91,8 @@ namespace com.ImmersizeFramework.Camera {
         public async Task InitializeAsync() {
             if (IsInitialized) return;
 
-            await Task.Run(() => {
-                InitializeControllers();
-                InitializeDefaultTarget();
-            });
+            InitializeControllers();
+            InitializeDefaultTarget();
             
             IsInitialized = true;
             FrameworkCore.Instance.LogMessage("[CameraService] Initialized");
