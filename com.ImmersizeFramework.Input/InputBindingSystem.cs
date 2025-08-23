@@ -4,9 +4,11 @@ using System.Linq;
 using UnityEngine;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 
 using com.ImmersizeFramework.Core;
 using com.ImmersizeFramework.Input;
+using com.ImmersizeFramework.Save;
 
 namespace com.ImmersizeFramework.Input {
     [System.Serializable]
@@ -168,10 +170,15 @@ namespace com.ImmersizeFramework.Input {
         public event Action<InputAction, object[]> OnActionExecuted;
         public event Action<string> OnProfileChanged;
         public event Action<InputAction> OnActionAdded;
+        
         private InputManager _inputManager;
+        private SaveManager _saveManager;
         private float _lastUpdateTime;
         private Dictionary<string, InputAction> _actionLookup = new();
         private List<IInputReceiver> _detectedReceivers = new();
+        
+        private const string PROFILES_SAVE_KEY = "InputProfiles";
+        private const string ACTIVE_INDEX_SAVE_KEY = "ActiveProfileIndex";
         #endregion
 
         #region Input Receiver Interface
@@ -202,10 +209,49 @@ namespace com.ImmersizeFramework.Input {
         #region Initialization & Auto-Detection
         private void Awake() {
             InitializeDefaultProfile();
+            InitializeSaveManager();
+            LoadProfiles();
         }
 
         private async void Start() {
             await InitializeAsync();
+        }
+
+        private void InitializeSaveManager() {
+            _saveManager = new SaveManager(new SaveManager.SaveSettings(
+                saveDir: "InputBindings",
+                encryption: false,
+                compression: false,
+                autoSave: true,
+                autoInterval: 2f,
+                format: SaveManager.SaveFormat.JSON,
+                prettyPrint: true
+            ));
+            _ = _saveManager.InitializeAsync();
+        }
+
+        private async void LoadProfiles() {
+            await Task.Delay(100);
+            
+            var savedProfiles = await _saveManager.LoadAsync<List<InputProfile>>(PROFILES_SAVE_KEY, SaveManager.SaveFormat.JSON);
+            if (savedProfiles != null && savedProfiles.Count > 0) {
+                _inputProfiles = savedProfiles;
+            }
+            
+            var savedIndex = await _saveManager.LoadAsync<int>(ACTIVE_INDEX_SAVE_KEY, SaveManager.SaveFormat.JSON, 0);
+            if (savedIndex >= 0 && savedIndex < _inputProfiles.Count) {
+                _activeProfileIndex = savedIndex;
+            }
+            
+            AutoDetectInputActions();
+            RefreshActionLookup();
+        }
+
+        private async void SaveProfiles() {
+            if (_saveManager != null && _saveManager.IsInitialized) {
+                await _saveManager.SaveAsync(PROFILES_SAVE_KEY, _inputProfiles, SaveManager.SaveFormat.JSON);
+                await _saveManager.SaveAsync(ACTIVE_INDEX_SAVE_KEY, _activeProfileIndex, SaveManager.SaveFormat.JSON);
+            }
         }
 
         public async System.Threading.Tasks.Task InitializeAsync() {
@@ -299,6 +345,7 @@ namespace com.ImmersizeFramework.Input {
 
             var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
             var foundActions = new List<InputAction>();
+            var hasNewActions = false;
 
             foreach (var method in methods) {
                 var attribute = method.GetCustomAttribute<InputActionAttribute>();
@@ -318,7 +365,12 @@ namespace com.ImmersizeFramework.Input {
                 if (!profile.HasAction(action.actionName)) {
                     profile.actions.Add(action);
                     OnActionAdded?.Invoke(action);
+                    hasNewActions = true;
                 }
+            }
+
+            if (hasNewActions) {
+                SaveProfiles();
             }
 
             if (foundActions.Any() && component is IInputReceiver receiver) {
@@ -510,19 +562,13 @@ namespace com.ImmersizeFramework.Input {
             var parameters = new object[paramTypes.Length];
 
             for (int i = 0; i < paramTypes.Length; i++) {
-                var paramType = paramTypes[i].ParameterType;
-                
-                if (paramType == typeof(float)) {
-                    parameters[i] = action.CurrentValue;
-                } else if (paramType == typeof(Vector2)) {
-                    parameters[i] = action.CurrentVector;
-                } else if (paramType == typeof(bool)) {
-                    parameters[i] = action.IsPressed;
-                } else if (paramType == typeof(string)) {
-                    parameters[i] = action.actionName;
-                } else {
-                    parameters[i] = GetDefaultValue(paramType);
-                }
+                var t = paramTypes[i].ParameterType;
+                parameters[i] =
+                    t == typeof(float) ? action.CurrentValue :
+                    t == typeof(Vector2) ? action.CurrentVector :
+                    t == typeof(bool) ? action.IsPressed :
+                    t == typeof(string) ? action.actionName :
+                    GetDefaultValue(t);
             }
 
             return parameters;
@@ -547,6 +593,7 @@ namespace com.ImmersizeFramework.Input {
         public bool SetActionKey(string actionName, KeyCode newKey) {
             if (_actionLookup.TryGetValue(actionName, out var action)) {
                 action.primaryKey = newKey;
+                SaveProfiles();
                 return true;
             }
             return false;
@@ -556,6 +603,7 @@ namespace com.ImmersizeFramework.Input {
         public bool SetActionEnabled(string actionName, bool enabled) {
             if (_actionLookup.TryGetValue(actionName, out var action)) {
                 action.isEnabled = enabled;
+                SaveProfiles();
                 return true;
             }
             return false;
@@ -575,6 +623,7 @@ namespace com.ImmersizeFramework.Input {
                 activeProfile.actions.Add(action);
                 RefreshActionLookup();
                 OnActionAdded?.Invoke(action);
+                SaveProfiles();
             }
 
             return action;
@@ -587,6 +636,7 @@ namespace com.ImmersizeFramework.Input {
                 if (action != null) {
                     activeProfile.actions.Remove(action);
                     RefreshActionLookup();
+                    SaveProfiles();
                     return true;
                 }
             }
@@ -599,10 +649,7 @@ namespace com.ImmersizeFramework.Input {
                 _activeProfileIndex = profileIndex;
                 RefreshActionLookup();
                 OnProfileChanged?.Invoke(profileName);
-                
-                if (_showDebugInfo) {
-                    Debug.Log($"[InputBinding] Switched to profile: {profileName}");
-                }
+                SaveProfiles();
             }
         }
 
@@ -614,6 +661,7 @@ namespace com.ImmersizeFramework.Input {
             };
             
             _inputProfiles.Add(profile);
+            SaveProfiles();
         }
 
         private void RefreshActionLookup() {
@@ -633,6 +681,8 @@ namespace com.ImmersizeFramework.Input {
         }
 
         public void Dispose() {
+            SaveProfiles();
+            _saveManager?.Dispose();
             IsInitialized = false;
             _actionLookup.Clear();
             _detectedReceivers.Clear();
@@ -681,6 +731,7 @@ namespace com.ImmersizeFramework.Input {
             }
 
             RefreshActionLookup();
+            SaveProfiles();
         }
 
         public List<InputAction> GetAllDetectedActions() {
