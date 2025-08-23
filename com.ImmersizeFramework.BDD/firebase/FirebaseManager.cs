@@ -246,15 +246,20 @@ namespace com.ImmersizeFramework.BDD {
         private async Task<FirebaseQueryResult> ExecuteFirebaseOperation(Func<Task<FirebaseQueryResult>> operation, string logMessage) {
             try {
                 var result = await operation();
+
                 if (result.success && settings.enableLogging) Debug.Log($"[Firebase] {logMessage}");
+
                 LastQueryResult = result;
                 OnQueryCompleted?.Invoke(result);
+
                 return result;
             } catch (Exception ex) {
                 var errorResult = new FirebaseQueryResult { error = ex.Message };
+
                 OnError?.Invoke(ex.Message);
                 LastQueryResult = errorResult;
                 OnQueryCompleted?.Invoke(errorResult);
+                
                 return errorResult;
             }
         }
