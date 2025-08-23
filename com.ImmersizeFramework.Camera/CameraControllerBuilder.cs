@@ -332,8 +332,7 @@ namespace com.ImmersizeFramework.Camera {
             };
         }
 
-        public CameraController Build()
-        {
+        public CameraController Build() {
             _controller.Init();
             return _controller;
         }
