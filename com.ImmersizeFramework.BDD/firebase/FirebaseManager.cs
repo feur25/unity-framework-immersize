@@ -271,8 +271,11 @@ namespace com.ImmersizeFramework.BDD {
                         await CreateDocumentAsync(attr.TableName, ParseDataString(attr.Data), attr.DocumentId);
                         break;
                     case FirebaseOperation.Read:
-                        if (!string.IsNullOrEmpty(attr.DocumentId)) await ReadDocumentAsync(attr.TableName, attr.DocumentId);
-                        else await QueryCollectionAsync(attr.TableName);
+                        var documentId = GetDynamicDocumentId(attr, instance);
+                        if (!string.IsNullOrEmpty(documentId)) 
+                            await ReadDocumentAsync(attr.TableName, documentId);
+                        else 
+                            await QueryCollectionAsync(attr.TableName);
                         break;
                     case FirebaseOperation.Update:
                         await UpdateDocumentAsync(attr.TableName, attr.DocumentId, ParseDataString(attr.Data));
@@ -281,15 +284,57 @@ namespace com.ImmersizeFramework.BDD {
                         await DeleteDocumentAsync(attr.TableName, attr.DocumentId);
                         break;
                     case FirebaseOperation.Query:
-                        var (field, value) = attr.Fields.Length > 1 
-                            ? (attr.Fields[0], attr.Fields[1]) 
-                            : (attr.Fields.FirstOrDefault() ?? "", attr.Data);
-                        await QueryCollectionAsync(attr.TableName, field, value);
+                        if (attr.TableName == "auth") {
+                            await HandleAuthenticationQuery(attr, instance);
+                        } else {
+                            var (field, value) = attr.Fields.Length > 1 
+                                ? (attr.Fields[0], attr.Fields[1]) 
+                                : (attr.Fields.FirstOrDefault() ?? "", attr.Data);
+                            await QueryCollectionAsync(attr.TableName, field, value);
+                        }
                         break;
                 }
             } catch (Exception ex) {
                 Debug.LogError($"[Firebase] Operation failed: {ex.Message}");
                 OnError?.Invoke(ex.Message);
+            }
+        }
+        
+        private string GetDynamicDocumentId(FirebaseMethodAttribute attr, object instance) {
+            if (!string.IsNullOrEmpty(attr.DocumentId)) return attr.DocumentId;
+
+            var contextMethod = instance.GetType().GetMethod("GetFirebaseContext");
+            if (contextMethod != null) {
+                var userId = contextMethod.Invoke(instance, new object[] { "userId" })?.ToString();
+                if (!string.IsNullOrEmpty(userId)) return userId;
+            }
+            
+            if (attr.TableName == "users" && CurrentUser != null) return CurrentUser.uid;
+            
+            return null;
+        }
+        
+        private async Task HandleAuthenticationQuery(FirebaseMethodAttribute attr, object instance) {
+            var emailField = instance.GetType().GetField("userEmail", 
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var passwordField = instance.GetType().GetField("userPassword", 
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            
+            if (emailField != null && passwordField != null) {
+                var email = emailField.GetValue(instance)?.ToString();
+                var password = passwordField.GetValue(instance)?.ToString();
+                
+                if (!string.IsNullOrEmpty(email) && !string.IsNullOrEmpty(password)) {
+                    await SignInAsync(email, password);
+                } else {
+                    var errorResult = new FirebaseQueryResult { error = "Email or password is empty" };
+                    OnError?.Invoke("Email or password is empty");
+                    OnQueryCompleted?.Invoke(errorResult);
+                }
+            } else {
+                var errorResult = new FirebaseQueryResult { error = "Could not find email/password fields" };
+                OnError?.Invoke("Could not find email/password fields");
+                OnQueryCompleted?.Invoke(errorResult);
             }
         }
 
