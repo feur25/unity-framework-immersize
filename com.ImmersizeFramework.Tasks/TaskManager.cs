@@ -6,15 +6,16 @@ using System.Threading.Tasks;
 using UnityEngine;
 using System.Runtime.CompilerServices;
 using System.Linq;
+using System.Diagnostics;
 
 using com.ImmersizeFramework.Core;
 
 namespace com.ImmersizeFramework.Tasks {
-    /// @(name="TaskManager", description="Advanced async task manager with priority queues, frame budgets, and parallel execution capabilities")
     public class TaskManager : IFrameworkService, IFrameworkTickable {
         
         #region Task Configuration & Nested Types
         public enum TaskPriority : byte { Low, Normal, High, Critical }
+        public enum TaskState : byte { Pending, Running, Completed, Failed, Cancelled }
         
         [System.Serializable]
         public readonly struct TaskSettings {
@@ -23,14 +24,18 @@ namespace com.ImmersizeFramework.Tasks {
             public readonly int HighPrioritySlots;
             public readonly float TimeoutSeconds;
             public readonly bool EnableProfiling;
+            public readonly int MaxRetries;
+            public readonly float RetryDelayMS;
 
             public TaskSettings(int maxConcurrent = 0, float frameBudget = 16.67f, int highSlots = 2, 
-                               float timeout = 30f, bool profiling = true) {
+                               float timeout = 30f, bool profiling = true, int retries = 3, float retryDelay = 100f) {
                 MaxConcurrentTasks = maxConcurrent > 0 ? maxConcurrent : Environment.ProcessorCount * 2;
                 FrameBudgetMS = frameBudget;
                 HighPrioritySlots = highSlots;
                 TimeoutSeconds = timeout;
                 EnableProfiling = profiling;
+                MaxRetries = retries;
+                RetryDelayMS = retryDelay;
             }
         }
 
@@ -41,10 +46,30 @@ namespace com.ImmersizeFramework.Tasks {
             public DateTime CreationTime { get; set; } = DateTime.UtcNow;
             public string Name { get; set; }
             public TaskCompletionSource<object> TCS { get; set; } = new();
+            public TaskState State { get; set; } = TaskState.Pending;
+            public int RetryCount { get; set; }
+            public Exception LastException { get; set; }
+            public TimeSpan ExecutionTime { get; set; }
+            public object Result { get; set; }
             
-            public void Complete() => TCS.TrySetResult(null);
-            public void Fail(Exception ex) => TCS.TrySetException(ex);
-            public void Cancel() => TCS.TrySetCanceled();
+            public void Complete(object result = null) {
+                State = TaskState.Completed;
+                Result = result;
+                TCS.TrySetResult(result);
+            }
+            
+            public void Fail(Exception ex) {
+                State = TaskState.Failed;
+                LastException = ex;
+                TCS.TrySetException(ex);
+            }
+            
+            public void Cancel() {
+                State = TaskState.Cancelled;
+                TCS.TrySetCanceled();
+            }
+            
+            public void SetRunning() => State = TaskState.Running;
         }
 
         private readonly struct DelayedCall {
@@ -68,19 +93,24 @@ namespace com.ImmersizeFramework.Tasks {
         }
 
         public readonly struct TaskStats {
-            public readonly int Queued, Started, Completed, Failed, Cancelled;
+            public readonly int Queued, Started, Completed, Failed, Cancelled, Retried;
+            public readonly float AverageExecutionTime, FrameUsagePercent;
             
-            public TaskStats(int queued, int started, int completed, int failed, int cancelled) {
+            public TaskStats(int queued, int started, int completed, int failed, int cancelled, 
+                           int retried = 0, float avgExecution = 0f, float frameUsage = 0f) {
                 Queued = queued; Started = started; Completed = completed; 
-                Failed = failed; Cancelled = cancelled;
+                Failed = failed; Cancelled = cancelled; Retried = retried;
+                AverageExecutionTime = avgExecution; FrameUsagePercent = frameUsage;
             }
 
             public static TaskStats operator +(TaskStats a, TaskStats b) => 
                 new(a.Queued + b.Queued, a.Started + b.Started, a.Completed + b.Completed, 
-                    a.Failed + b.Failed, a.Cancelled + b.Cancelled);
+                    a.Failed + b.Failed, a.Cancelled + b.Cancelled, a.Retried + b.Retried,
+                    (a.AverageExecutionTime + b.AverageExecutionTime) / 2f,
+                    (a.FrameUsagePercent + b.FrameUsagePercent) / 2f);
 
             public override string ToString() => 
-                $"Q:{Queued} S:{Started} C:{Completed} F:{Failed} X:{Cancelled}";
+                $"Q:{Queued} S:{Started} C:{Completed} F:{Failed} X:{Cancelled} R:{Retried} T:{AverageExecutionTime:F2}ms F:{FrameUsagePercent:F1}%";
         }
         #endregion
 
@@ -91,20 +121,25 @@ namespace com.ImmersizeFramework.Tasks {
         public float FrameTimeUsed { get; private set; }
         public TaskStats Stats { get { lock (_statsLock) return _stats; } }
         public int Priority => 1;
+        public IReadOnlyCollection<FrameworkTask> RunningTasks => _activeTasks.Values.ToList().AsReadOnly();
+        public IReadOnlyDictionary<TaskPriority, int> QueueSizes => 
+            _taskQueues.Select((q, i) => new { Priority = (TaskPriority)i, Count = q.Count })
+                       .ToDictionary(x => x.Priority, x => x.Count);
 
         private readonly TaskSettings _settings;
         private readonly ConcurrentQueue<FrameworkTask>[] _taskQueues;
         private readonly ConcurrentDictionary<Task, FrameworkTask> _activeTasks = new();
         private readonly Queue<Action> _mainThreadQueue = new();
         private readonly List<DelayedCall> _delayedCalls = new();
+        private readonly ConcurrentDictionary<string, FrameworkTask> _namedTasks = new();
+        private readonly Queue<float> _executionTimes = new();
         private readonly object _mainThreadLock = new();
         private readonly object _statsLock = new();
-        private readonly System.Diagnostics.Stopwatch _frameWatch = new();
+        private readonly Stopwatch _frameWatch = new();
         private readonly float _frameBudgetTicks;
         private TaskStats _stats;
 
-        public FrameworkTask this[string name] => 
-            _activeTasks.Values.FirstOrDefault(t => t.Name == name);
+        public FrameworkTask this[string name] => _namedTasks.TryGetValue(name, out var task) ? task : null;
         #endregion
 
         #region Constructors & Initialization
@@ -125,6 +160,118 @@ namespace com.ImmersizeFramework.Tasks {
             
             IsInitialized = true;
             await Task.CompletedTask;
+        }
+        #endregion
+
+        #region Advanced Features
+        public Task<T> RunWithRetry<T>(Func<Task<T>> taskFunc, int maxRetries = -1, float retryDelay = -1f, 
+            TaskPriority priority = TaskPriority.Normal, CancellationToken token = default, 
+            [CallerMemberName] string name = null) {
+            
+            maxRetries = maxRetries < 0 ? _settings.MaxRetries : maxRetries;
+            retryDelay = retryDelay < 0 ? _settings.RetryDelayMS : retryDelay;
+
+            return RunAsync(async () => {
+                for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                    try {
+                        return await taskFunc();
+                    } catch (Exception ex) when (attempt < maxRetries) {
+                        lock (_statsLock) _stats += new TaskStats(0, 0, 0, 0, 0, 1);
+                        if (retryDelay > 0) await Task.Delay((int)retryDelay, token);
+                        if (attempt == maxRetries - 1) throw;
+                    }
+                }
+                throw new InvalidOperationException("Max retries exceeded");
+            }, priority, token, $"{name}_Retry");
+        }
+
+        public Task<T> RunWithTimeout<T>(Func<Task<T>> taskFunc, TimeSpan timeout, 
+            TaskPriority priority = TaskPriority.Normal, [CallerMemberName] string name = null) {
+            
+            using var cts = new CancellationTokenSource(timeout);
+            return RunAsync(taskFunc, priority, cts.Token, $"{name}_Timeout");
+        }
+
+        public Task<T> RunWithCircuitBreaker<T>(string circuitName, Func<Task<T>> taskFunc, 
+            int failureThreshold = 5, TimeSpan resetTimeout = default, 
+            TaskPriority priority = TaskPriority.Normal, [CallerMemberName] string name = null) {
+            
+            return RunAsync(async () => {
+                var circuit = GetOrCreateCircuit(circuitName, failureThreshold, resetTimeout);
+                return await circuit.ExecuteAsync(taskFunc);
+            }, priority, default, $"{name}_Circuit");
+        }
+
+        public Task Batch(IEnumerable<Func<Task>> tasks, int batchSize = 10, 
+            TaskPriority priority = TaskPriority.Normal, CancellationToken token = default) {
+            
+            return RunAsync(async () => {
+                var taskList = tasks.ToList();
+                for (int i = 0; i < taskList.Count; i += batchSize) {
+                    var batch = taskList.Skip(i).Take(batchSize);
+                    var batchTasks = batch.Select(t => RunAsync(t, priority, token));
+                    await Task.WhenAll(batchTasks);
+                }
+            }, priority, token, "BatchExecution");
+        }
+
+        public async Task<T> RaceAsync<T>(params Func<Task<T>>[] tasks) {
+            var raceTasks = tasks.Select((t, i) => RunAsync(t, TaskPriority.High, default, $"Race_{i}"));
+            return await Task.WhenAny(raceTasks).ContinueWith(t => t.Result.Result);
+        }
+
+        public Task Pipeline<T>(IEnumerable<T> items, params Func<T, Task<T>>[] stages) {
+            return RunAsync(async () => {
+                var results = items;
+                foreach (var stage in stages) {
+                    var currentStage = stage;
+                    results = await Task.WhenAll(results.Select(currentStage));
+                }
+            }, TaskPriority.Normal, default, "Pipeline");
+        }
+
+        private readonly ConcurrentDictionary<string, CircuitBreaker> _circuits = new();
+        
+        private CircuitBreaker GetOrCreateCircuit(string name, int threshold, TimeSpan timeout) {
+            return _circuits.GetOrAdd(name, _ => new CircuitBreaker(threshold, timeout));
+        }
+
+        private sealed class CircuitBreaker {
+            private readonly int _failureThreshold;
+            private readonly TimeSpan _resetTimeout;
+            private int _failureCount;
+            private DateTime _lastFailureTime;
+            private volatile bool _isOpen;
+
+            public CircuitBreaker(int threshold, TimeSpan timeout) {
+                _failureThreshold = threshold;
+                _resetTimeout = timeout == default ? TimeSpan.FromMinutes(1) : timeout;
+            }
+
+            public async Task<T> ExecuteAsync<T>(Func<Task<T>> operation) {
+                if (_isOpen && DateTime.UtcNow - _lastFailureTime < _resetTimeout)
+                    throw new InvalidOperationException("Circuit breaker is open");
+
+                try {
+                    var result = await operation();
+                    Reset();
+                    return result;
+                } catch (Exception) {
+                    RecordFailure();
+                    throw;
+                }
+            }
+
+            private void RecordFailure() {
+                _failureCount++;
+                _lastFailureTime = DateTime.UtcNow;
+                if (_failureCount >= _failureThreshold) _isOpen = true;
+            }
+
+            private void Reset() {
+                _failureCount = 0;
+                _isOpen = false;
+            }
         }
         #endregion
 
@@ -203,6 +350,7 @@ namespace com.ImmersizeFramework.Tasks {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void EnqueueTask(FrameworkTask task) {
             _taskQueues[(int)task.Priority].Enqueue(task);
+            if (!string.IsNullOrEmpty(task.Name)) _namedTasks.TryAdd(task.Name, task);
             lock (_statsLock) _stats += new TaskStats(1, 0, 0, 0, 0);
         }
         #endregion
@@ -280,7 +428,7 @@ namespace com.ImmersizeFramework.Tasks {
 
                 if (call.Token.IsCancellationRequested || currentTime < call.ExecuteTime) continue;
 
-                try { call.Action?.Invoke(); } catch (Exception ex) { Debug.LogError($"[TaskManager] Delayed call error: {ex}"); }
+                try { call.Action?.Invoke(); } catch (Exception ex) { UnityEngine.Debug.LogError($"[TaskManager] Delayed call error: {ex}"); }
                 if (call.IsRepeating && !call.Token.IsCancellationRequested)
                     _delayedCalls[i] = call.WithNextExecution(currentTime);
                 else _delayedCalls.RemoveAt(i);
@@ -309,14 +457,22 @@ namespace com.ImmersizeFramework.Tasks {
         }
 
         private void ExecuteTask(FrameworkTask frameworkTask) {
+            var taskTimer = Stopwatch.StartNew();
+            
             var task = Task.Run(async () => {
                 try {
+                    frameworkTask.SetRunning();
                     lock (_statsLock) _stats += new TaskStats(0, 1, 0, 0, 0);
                     
                     using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_settings.TimeoutSeconds));
                     using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(frameworkTask.Token, timeoutCts.Token);
                     
                     await frameworkTask.TaskFunc();
+                    
+                    taskTimer.Stop();
+                    frameworkTask.ExecutionTime = taskTimer.Elapsed;
+                    UpdateExecutionStats(taskTimer.Elapsed);
+                    
                     lock (_statsLock) _stats += new TaskStats(0, 0, 1, 0, 0);
                     frameworkTask.Complete();
                 } catch (OperationCanceledException) {
@@ -324,12 +480,28 @@ namespace com.ImmersizeFramework.Tasks {
                     frameworkTask.Cancel();
                 } catch (Exception ex) {
                     lock (_statsLock) _stats += new TaskStats(0, 0, 0, 1, 0);
-                    if (_settings.EnableProfiling) Debug.LogError($"[TaskManager] '{frameworkTask.Name}' failed: {ex}");
                     frameworkTask.Fail(ex);
+                } finally {
+                    if (!string.IsNullOrEmpty(frameworkTask.Name)) 
+                        _namedTasks.TryRemove(frameworkTask.Name, out _);
                 }
             });
 
             _activeTasks.TryAdd(task, frameworkTask);
+        }
+
+        private void UpdateExecutionStats(TimeSpan executionTime) {
+            const int maxSamples = 100;
+            lock (_statsLock) {
+                _executionTimes.Enqueue((float)executionTime.TotalMilliseconds);
+                if (_executionTimes.Count > maxSamples) _executionTimes.Dequeue();
+                
+                var avgTime = _executionTimes.Average();
+                var frameUsage = (FrameTimeUsed / _settings.FrameBudgetMS) * 100f;
+                
+                _stats = new TaskStats(_stats.Queued, _stats.Started, _stats.Completed, 
+                                     _stats.Failed, _stats.Cancelled, _stats.Retried, avgTime, frameUsage);
+            }
         }
 
         private void CleanupCompletedTasks() {
@@ -342,9 +514,14 @@ namespace com.ImmersizeFramework.Tasks {
         #endregion
 
         #region Management & Cleanup
+        public void CancelTask(string name) {
+            if (_namedTasks.TryGetValue(name, out var task)) task.Cancel();
+        }
+
         public void CancelAllTasks() {
             foreach (var task in _activeTasks.Values) task.Cancel();
             _activeTasks.Clear();
+            _namedTasks.Clear();
             
             foreach (var queue in _taskQueues) {
                 while (queue.TryDequeue(out _)) { }
@@ -353,13 +530,44 @@ namespace com.ImmersizeFramework.Tasks {
             lock (_statsLock) _stats += new TaskStats(0, 0, 0, 0, _activeTasks.Count);
         }
 
-        public void LogStats() => Debug.Log($"[TaskManager] {Stats} | Active:{ActiveTasks} Queued:{QueuedTasks} Frame:{FrameTimeUsed:F2}ms");
-        
-        public void ResetStats() { lock (_statsLock) _stats = new TaskStats(); }
+        public void PauseTask(string name) {
+            if (_namedTasks.TryGetValue(name, out var task) && task.State == TaskState.Running) {
+                task.Token.ThrowIfCancellationRequested();
+            }
+        }
+
+        public IEnumerable<FrameworkTask> GetTasksByPriority(TaskPriority priority) =>
+            _activeTasks.Values.Where(t => t.Priority == priority);
+
+        public IEnumerable<FrameworkTask> GetTasksByState(TaskState state) =>
+            _activeTasks.Values.Where(t => t.State == state);
+
+        public void OptimizeQueues() {
+            var lowPriorityTasks = new List<FrameworkTask>();
+            while (_taskQueues[(int)TaskPriority.Low].TryDequeue(out var task)) {
+                if (DateTime.UtcNow - task.CreationTime > TimeSpan.FromMinutes(5)) {
+                    task.Cancel();
+                } else {
+                    lowPriorityTasks.Add(task);
+                }
+            }
+            
+            foreach (var task in lowPriorityTasks) {
+                _taskQueues[(int)TaskPriority.Low].Enqueue(task);
+            }
+        }
+
+        public void ResetStats() { 
+            lock (_statsLock) {
+                _stats = new TaskStats();
+                _executionTimes.Clear();
+            }
+        }
 
         public void Dispose() {
             CancelAllTasks();
             _delayedCalls.Clear();
+            _circuits.Clear();
             lock (_mainThreadLock) _mainThreadQueue.Clear();
         }
         #endregion
