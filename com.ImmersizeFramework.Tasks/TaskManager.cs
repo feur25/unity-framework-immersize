@@ -203,7 +203,7 @@ namespace com.ImmersizeFramework.Tasks {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void EnqueueTask(FrameworkTask task) {
             _taskQueues[(int)task.Priority].Enqueue(task);
-            lock (_statsLock) _stats = _stats + new TaskStats(1, 0, 0, 0, 0);
+            lock (_statsLock) _stats += new TaskStats(1, 0, 0, 0, 0);
         }
         #endregion
 
