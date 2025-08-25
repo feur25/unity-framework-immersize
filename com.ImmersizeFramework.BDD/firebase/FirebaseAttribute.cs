@@ -26,7 +26,23 @@ namespace com.ImmersizeFramework.BDD {
     public enum FirebaseOperation { Create, Read, Update, Delete, Query, Listen }
 
     public static class FirebaseTracker {
-        public static void Log(object instance, [CallerMemberName] string methodName = "") => 
+        public static void Log(object instance, [CallerMemberName] string methodName = "") {
             AttributeTracker<FirebaseMethodAttribute>.Track(instance, methodName);
+            
+            if (FirebaseManager.Instance == null) return;
+            
+            var method = instance.GetType().GetMethod(methodName, 
+                System.Reflection.BindingFlags.Public | 
+                System.Reflection.BindingFlags.NonPublic | 
+                System.Reflection.BindingFlags.Instance);
+            
+            if (method != null) {
+                var firebaseAttr = method.GetCustomAttribute<FirebaseMethodAttribute>();
+                if (firebaseAttr != null) {
+                    UnityEngine.Debug.Log($"[FirebaseTracker] Executing Firebase operation for {methodName} on {firebaseAttr.TableName}");
+                    FirebaseManager.Instance.ExecuteFirebaseOperation(firebaseAttr, instance);
+                }
+            }
+        }
     }
 }

@@ -327,15 +327,13 @@ namespace com.ImmersizeFramework.Input {
 
             var allMonoBehaviours = FindObjectsOfType<MonoBehaviour>();
             
-            foreach (var mb in allMonoBehaviours) {
+            foreach (var mb in allMonoBehaviours)
                 DetectInputsInComponent(mb, activeProfile);
-            }
 
             RefreshActionLookup();
             
-            if (_showDebugInfo) {
+            if (_showDebugInfo)
                 Debug.Log($"[InputBinding] Auto-detected {_detectedReceivers.Count} input receivers with {activeProfile.actions.Count} total actions");
-            }
         }
 
         private void DetectInputsInComponent(MonoBehaviour component, InputProfile profile) {
@@ -369,9 +367,8 @@ namespace com.ImmersizeFramework.Input {
                 }
             }
 
-            if (hasNewActions) {
+            if (hasNewActions)
                 SaveProfiles();
-            }
 
             if (foundActions.Any() && component is IInputReceiver receiver) {
                 _detectedReceivers.Add(receiver);
@@ -421,10 +418,8 @@ namespace com.ImmersizeFramework.Input {
                 }
             }
             
-            foreach (var suffix in _methodSuffixes)
-            {
-                if (name.EndsWith(suffix))
-                {
+            foreach (var suffix in _methodSuffixes) {
+                if (name.EndsWith(suffix)) {
                     name = name.Substring(0, name.Length - suffix.Length);
                     break;
                 }

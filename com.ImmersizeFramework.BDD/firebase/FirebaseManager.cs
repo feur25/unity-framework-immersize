@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using UnityEngine;
 using System.Runtime.CompilerServices;
 using System.Linq;
+using System.Reflection;
 
 #if UNITY_EDITOR
 using Firebase;
@@ -48,11 +49,16 @@ namespace com.ImmersizeFramework.BDD {
             public string email;
             public string displayName;
             public bool isEmailVerified;
+            public string role;
+            public string company;
+            public string name;
             public Dictionary<string, object> customClaims;
 
             public FirebaseUser() => customClaims = new Dictionary<string, object>();
             public T GetClaim<T>(string key, T defaultValue = default) => 
                 customClaims.TryGetValue(key, out var value) && value is T result ? result : defaultValue;
+            public bool IsAdmin => role == "admin";
+            public bool IsUser => role == "user";
         }
 
         public static FirebaseManager Instance { get; private set; }
@@ -121,7 +127,10 @@ namespace com.ImmersizeFramework.BDD {
                         uid = auth.CurrentUser.UserId,
                         email = auth.CurrentUser.Email,
                         displayName = auth.CurrentUser.DisplayName,
-                        isEmailVerified = auth.CurrentUser.IsEmailVerified
+                        isEmailVerified = auth.CurrentUser.IsEmailVerified,
+                        role = "user",
+                        company = "",
+                        name = auth.CurrentUser.DisplayName ?? ""
                     };
                     OnUserSignedIn?.Invoke(CurrentUser);
                 } else {
@@ -137,6 +146,7 @@ namespace com.ImmersizeFramework.BDD {
 #if UNITY_EDITOR
                 var authResult = await auth.SignInWithEmailAndPasswordAsync(email, password);
                 var user = authResult.User;
+                
                 return new FirebaseQueryResult(true) {
                     data = {
                         ["uid"] = user.UserId,
@@ -315,25 +325,42 @@ namespace com.ImmersizeFramework.BDD {
         }
         
         private async Task HandleAuthenticationQuery(FirebaseMethodAttribute attr, object instance) {
-            var emailField = instance.GetType().GetField("userEmail", 
+            var emailProp = instance.GetType().GetProperty("UserEmail", 
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var passwordField = instance.GetType().GetField("userPassword", 
+            var passwordProp = instance.GetType().GetProperty("UserPassword", 
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             
-            if (emailField != null && passwordField != null) {
-                var email = emailField.GetValue(instance)?.ToString();
-                var password = passwordField.GetValue(instance)?.ToString();
+            if (emailProp != null && passwordProp != null) {
+                var email = emailProp.GetValue(instance)?.ToString();
+                var password = passwordProp.GetValue(instance)?.ToString();
                 
                 if (!string.IsNullOrEmpty(email) && !string.IsNullOrEmpty(password)) {
-                    await SignInAsync(email, password);
+                    var signInResult = await SignInAsync(email, password);
+                    if (signInResult.success) {
+                        OnQueryCompleted?.Invoke(signInResult);
+                    }
                 } else {
+                    var contextMethod = instance.GetType().GetMethod("GetFirebaseContext");
+                    if (contextMethod != null) {
+                        email = contextMethod.Invoke(instance, new object[] { "email" })?.ToString();
+                        password = contextMethod.Invoke(instance, new object[] { "password" })?.ToString();
+                        
+                        if (!string.IsNullOrEmpty(email) && !string.IsNullOrEmpty(password)) {
+                            var signInResult = await SignInAsync(email, password);
+                            if (signInResult.success) {
+                                OnQueryCompleted?.Invoke(signInResult);
+                            }
+                            return;
+                        }
+                    }
+                    
                     var errorResult = new FirebaseQueryResult { error = "Email or password is empty" };
                     OnError?.Invoke("Email or password is empty");
                     OnQueryCompleted?.Invoke(errorResult);
                 }
             } else {
-                var errorResult = new FirebaseQueryResult { error = "Could not find email/password fields" };
-                OnError?.Invoke("Could not find email/password fields");
+                var errorResult = new FirebaseQueryResult { error = "Could not find email/password properties" };
+                OnError?.Invoke("Could not find email/password properties");
                 OnQueryCompleted?.Invoke(errorResult);
             }
         }
