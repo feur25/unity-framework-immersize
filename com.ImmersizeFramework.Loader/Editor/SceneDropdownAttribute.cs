@@ -2,8 +2,7 @@ using System;
 using UnityEngine;
 
 [AttributeUsage(AttributeTargets.Field)]
-public sealed class SceneDropdownAttribute : PropertyAttribute
-{
+public sealed class SceneDropdownAttribute : PropertyAttribute {
     readonly string filter;
     
     public SceneDropdownAttribute(string filter = null) => this.filter = filter;
