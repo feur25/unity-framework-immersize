@@ -6,12 +6,10 @@ using System.Runtime.CompilerServices;
 using System.Linq;
 using System.Reflection;
 
-#if UNITY_EDITOR
 using Firebase;
 using Firebase.Auth;
 using Firebase.Firestore;
 using Firebase.Extensions;
-#endif
 
 using com.ImmersizeFramework.Core;
 
@@ -69,11 +67,9 @@ namespace com.ImmersizeFramework.BDD {
 
         [SerializeField] private FirebaseSettings settings = new();
 
-#if UNITY_EDITOR
         private FirebaseApp app;
         private FirebaseAuth auth;
         private FirebaseFirestore firestore;
-#endif
 
         public event Action<FirebaseUser> OnUserSignedIn;
         public event Action OnUserSignedOut;
@@ -90,7 +86,6 @@ namespace com.ImmersizeFramework.BDD {
         public async Task InitializeAsync() {
             if (IsInitialized) return;
 
-#if UNITY_EDITOR
             try {
                 app = FirebaseApp.DefaultInstance ?? FirebaseApp.Create(new AppOptions {
                     ProjectId = settings.projectId,
@@ -110,15 +105,11 @@ namespace com.ImmersizeFramework.BDD {
                 Debug.LogError($"[Firebase] Initialization failed: {ex.Message}");
                 OnError?.Invoke(ex.Message);
             }
-#else
-            Debug.LogWarning("[Firebase] Firebase SDK not available in build");
-            await Task.CompletedTask;
-#endif
+
         }
 
         public void Initialize() => _ = InitializeAsync();
-
-#if UNITY_EDITOR
+        
         private void OnAuthStateChanged(object sender, EventArgs eventArgs) {
             if (auth.CurrentUser?.UserId != CurrentUser?.uid) {
                 var signedIn = auth.CurrentUser != null;
@@ -139,11 +130,9 @@ namespace com.ImmersizeFramework.BDD {
                 }
             }
         }
-#endif
 
         public async Task<FirebaseQueryResult> SignInAsync(string email, string password) =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 var authResult = await auth.SignInWithEmailAndPasswordAsync(email, password);
                 var user = authResult.User;
                 
@@ -154,14 +143,10 @@ namespace com.ImmersizeFramework.BDD {
                         ["displayName"] = user.DisplayName
                     }
                 };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, "User signed in");
 
         public async Task<FirebaseQueryResult> CreateUserAsync(string email, string password) =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 var authResult = await auth.CreateUserWithEmailAndPasswordAsync(email, password);
                 var user = authResult.User;
                 return new FirebaseQueryResult(true) {
@@ -170,21 +155,15 @@ namespace com.ImmersizeFramework.BDD {
                         ["email"] = user.Email
                     }
                 };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, "User created");
 
         public void SignOut() {
-#if UNITY_EDITOR
             auth?.SignOut();
             if (settings.enableLogging) Debug.Log("[Firebase] User signed out");
-#endif
         }
 
         public async Task<FirebaseQueryResult> CreateDocumentAsync(string collection, Dictionary<string, object> data, string documentId = "") =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 var collectionRef = firestore.Collection(collection);
                 var docRef = string.IsNullOrEmpty(documentId) 
                     ? await collectionRef.AddAsync(data)
@@ -196,46 +175,30 @@ namespace com.ImmersizeFramework.BDD {
                     documentId = docRef.Id,
                     data = data
                 };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, $"Document created in {collection}");
 
         public async Task<FirebaseQueryResult> ReadDocumentAsync(string collection, string documentId) =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 var snapshot = await firestore.Collection(collection).Document(documentId).GetSnapshotAsync();
                 return snapshot.Exists 
                     ? new FirebaseQueryResult(true) { data = snapshot.ToDictionary(), documentId = documentId }
                     : new FirebaseQueryResult { error = "Document not found" };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, $"Document read from {collection}: {documentId}");
 
         public async Task<FirebaseQueryResult> UpdateDocumentAsync(string collection, string documentId, Dictionary<string, object> data) =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 await firestore.Collection(collection).Document(documentId).UpdateAsync(data);
                 return new FirebaseQueryResult(true) { data = data, documentId = documentId };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, $"Document updated in {collection}: {documentId}");
 
         public async Task<FirebaseQueryResult> DeleteDocumentAsync(string collection, string documentId) =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 await firestore.Collection(collection).Document(documentId).DeleteAsync();
                 return new FirebaseQueryResult(true) { documentId = documentId };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, $"Document deleted from {collection}: {documentId}");
 
         public async Task<FirebaseQueryResult> QueryCollectionAsync(string collection, string field = "", object value = null, int limit = 50) =>
             await ExecuteFirebaseOperation(async () => {
-#if UNITY_EDITOR
                 var collectionRef = firestore.Collection(collection);
                 Query query = collectionRef;
                 if (!string.IsNullOrEmpty(field) && value != null) query = query.WhereEqualTo(field, value);
@@ -248,9 +211,6 @@ namespace com.ImmersizeFramework.BDD {
                         return data;
                     }).ToList()
                 };
-#else
-                return new FirebaseQueryResult { error = "Firebase not available in build" };
-#endif
             }, $"Query completed for {collection}");
 
         private async Task<FirebaseQueryResult> ExecuteFirebaseOperation(Func<Task<FirebaseQueryResult>> operation, string logMessage) {
@@ -376,19 +336,15 @@ namespace com.ImmersizeFramework.BDD {
         }
 
         private void OnDestroy() {
-#if UNITY_EDITOR
             if (auth != null) auth.StateChanged -= OnAuthStateChanged;
-#endif
         }
 
         public void Dispose()  {
-#if UNITY_EDITOR
             if (auth != null) auth.StateChanged -= OnAuthStateChanged;
 
             app = null;
             auth = null;
             firestore = null;
-#endif
         }
     }
 
