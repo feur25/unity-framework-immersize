@@ -41,9 +41,11 @@ namespace com.ImmersizeFramework.Loader.Editor {
             
             var roleProperty = property.FindPropertyRelative("Role");
             var sceneProperty = property.FindPropertyRelative("SceneName");
+            var urlProperty = property.FindPropertyRelative("DownloadUrl");
             
-            var roleRect = new Rect(position.x, position.y, position.width * 0.4f - SPACING, LINE_HEIGHT);
-            var sceneRect = new Rect(position.x + position.width * 0.4f, position.y, position.width * 0.6f, LINE_HEIGHT);
+            var roleRect = new Rect(position.x, position.y, position.width * 0.25f - SPACING, LINE_HEIGHT);
+            var sceneRect = new Rect(position.x + position.width * 0.25f, position.y, position.width * 0.35f - SPACING, LINE_HEIGHT);
+            var urlRect = new Rect(position.x + position.width * 0.6f, position.y, position.width * 0.4f, LINE_HEIGHT);
             
             EditorGUI.PropertyField(roleRect, roleProperty, GUIContent.none);
             
@@ -56,6 +58,8 @@ namespace com.ImmersizeFramework.Loader.Editor {
             if (newIndex != currentIndex && newIndex >= 0 && newIndex < _sceneNames.Length) {
                 sceneProperty.stringValue = newIndex == 0 ? string.Empty : _sceneNames[newIndex];
             }
+            
+            EditorGUI.PropertyField(urlRect, urlProperty, new GUIContent("", "Download URL for assets"));
             
             EditorGUI.EndProperty();
         }
