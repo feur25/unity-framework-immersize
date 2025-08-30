@@ -25,12 +25,16 @@ namespace com.ImmersizeFramework.Loader {
         
         public async Task<bool> DownloadAssetsAsync() {
             if (!HasDownloadUrl) return true;
-            
             var role = Role;
             var url = DownloadUrl;
-            using var downloader = new GameAssetDownloader();
-
-            return await downloader.CheckAndDownloadAssetsAsync(role, _ => Task.FromResult(url));
+            var streamingManager = com.ImmersizeFramework.Streaming.StreamingAssetManager.Instance;
+            
+            if (streamingManager != null) {
+                return await streamingManager.DownloadRoleAssetsAsync(role, url);
+            } else {
+                using var downloader = new GameAssetDownloader();
+                return await downloader.CheckAndDownloadAssetsAsync(role, _ => Task.FromResult(url));
+            }
         }
         
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
